@@ -1,36 +1,65 @@
-import { parseKey } from '../util'
-import { fromString } from 'uint8arrays/from-string'
+import { bigintToBytes, hexToBytes } from '../util'
 
-describe('parseKey', () => {
-  const privateKeyBase58 = '2sxRbZxrkTR1tmUH88aWcosMRf8zianLjV3vZcVewCDzgimGt5gLeHx1cm4bqfeEuVmDaCREgUNZbKHJAB8HHf9e'
-  const privateKeyHex =
-    '5DF58BB06C22FEBAC638296C0F629703E2B9E4A1D9D68298DDEC13D1757D73E056D299B8CF2FC5AB12EDEF6C0B28A7D57ED0649A188B6C5B88E74F208792E62D'
-  const privateKeyHexPrefix =
-    '0x5df58bb06c22febac638296c0f629703e2b9e4a1d9d68298ddec13d1757d73e056d299b8cf2fc5ab12edef6c0b28a7d57ed0649a188b6c5b88e74f208792e62d'
-  const privateKeyBase64 = 'XfWLsGwi/rrGOClsD2KXA+K55KHZ1oKY3ewT0XV9c+BW0pm4zy/FqxLt72wLKKfVftBkmhiLbFuI508gh5LmLQ'
-  const privateKeyBase64Url = 'XfWLsGwi_rrGOClsD2KXA-K55KHZ1oKY3ewT0XV9c-BW0pm4zy_FqxLt72wLKKfVftBkmhiLbFuI508gh5LmLQ'
-
-  const privateKeyBytes = fromString(
-    'XfWLsGwi/rrGOClsD2KXA+K55KHZ1oKY3ewT0XV9c+BW0pm4zy/FqxLt72wLKKfVftBkmhiLbFuI508gh5LmLQ', 'base64'
-  )
-
-  it('parses hex', () => {
-    expect(parseKey(privateKeyHex)).toMatchObject(privateKeyBytes)
+describe('bigintToBytes', () => {
+  it('should convert a bigint to bytes', () => {
+    const bn = BigInt(65535)
+    const bytes = bigintToBytes(bn)
+    expect(bytes).toEqual(new Uint8Array([255, 255]))
   })
 
-  it('parses prefixed hex', () => {
-    expect(parseKey(privateKeyHexPrefix)).toMatchObject(privateKeyBytes)
+  it('should convert a bigint to bytes given a minimum length', () => {
+    const bn = BigInt(65535)
+    const bytes = bigintToBytes(bn, 32)
+    expect(bytes).toEqual(
+      new Uint8Array([
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255,
+      ])
+    )
   })
 
-  it('parses base64', () => {
-    expect(parseKey(privateKeyBase64)).toMatchObject(privateKeyBytes)
+  it('should convert a bigint to bytes given a minimum length less than the number', () => {
+    const bn = BigInt('0x112233445566778899')
+    const bytes = bigintToBytes(bn, 5)
+    expect(bytes).toEqual(new Uint8Array([17, 34, 51, 68, 85, 102, 119, 136, 153]))
   })
 
-  it('parses base64url', () => {
-    expect(parseKey(privateKeyBase64Url)).toMatchObject(privateKeyBytes)
+  it('should convert a bigint to bytes given an odd number of bytes', () => {
+    const bn = BigInt('0x101010101010101')
+    const bytes = bigintToBytes(bn)
+    expect(bytes).toEqual(new Uint8Array([1, 1, 1, 1, 1, 1, 1, 1]))
+  })
+})
+
+describe('hexToBytes', () => {
+  it('should convert a hex string to bytes', () => {
+    const bn = '0101'
+    const bytes = hexToBytes(bn)
+    expect(bytes).toEqual(new Uint8Array([1, 1]))
   })
 
-  it('parses base58btc', () => {
-    expect(parseKey(privateKeyBase58)).toMatchObject(privateKeyBytes)
+  it('should convert a hex string with a prefix to bytes', () => {
+    const bn = '0x0101'
+    const bytes = hexToBytes(bn)
+    expect(bytes).toEqual(new Uint8Array([1, 1]))
+  })
+
+  it('should convert a hex string to bytes given a minimum length', () => {
+    const bn = '0101'
+    const bytes = hexToBytes(bn, 32)
+    expect(bytes).toEqual(
+      new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1])
+    )
+  })
+
+  it('should convert a hex string to bytes given a minimum length less than the number', () => {
+    const bn = '0x112233445566778899'
+    const bytes = hexToBytes(bn, 5)
+    expect(bytes).toEqual(new Uint8Array([17, 34, 51, 68, 85, 102, 119, 136, 153]))
+  })
+
+  it('should convert a hexString to bytes given an odd number of bytes', () => {
+    const bn = '0x101010101010101'
+    const bytes = hexToBytes(bn)
+    expect(bytes).toEqual(new Uint8Array([1, 1, 1, 1, 1, 1, 1, 1]))
   })
 })

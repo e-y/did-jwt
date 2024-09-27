@@ -1,6 +1,6 @@
-import { fromJose } from '../util'
-import { Signer } from '../JWT'
-import { ES256KSigner } from './ES256KSigner'
+import { fromJose, hexToBytes } from '../util.js'
+import type { Signer } from '../JWT.js'
+import { ES256KSigner } from './ES256KSigner.js'
 
 /**
  * @deprecated Please use ES256KSigner
@@ -16,7 +16,7 @@ import { ES256KSigner } from './ES256KSigner'
  *  @return   {Function}                     a configured signer function
  */
 function SimpleSigner(hexPrivateKey: string): Signer {
-  const signer = ES256KSigner(hexPrivateKey, true)
+  const signer = ES256KSigner(hexToBytes(hexPrivateKey), true)
   return async (data) => {
     const signature = (await signer(data)) as string
     return fromJose(signature)

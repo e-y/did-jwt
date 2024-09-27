@@ -1,5 +1,11 @@
-import * as u8a from 'uint8arrays'
+import { concat, fromString, toString } from 'uint8arrays'
 import { bases } from 'multiformats/basics'
+import { x25519 } from '@noble/curves/ed25519'
+import { p256 } from '@noble/curves/p256'
+import type { EphemeralKeyPair } from './encryption/types.js'
+import { varint } from 'multiformats'
+
+const u8a = { toString, fromString, concat }
 
 /**
  * @deprecated Signers will be expected to return base64url `string` signatures.
@@ -7,7 +13,24 @@ import { bases } from 'multiformats/basics'
 export interface EcdsaSignature {
   r: string
   s: string
-  recoveryParam?: number | null
+  recoveryParam?: number
+}
+
+/**
+ * @deprecated Signers will be expected to return base64url `string` signatures.
+ */
+export type ECDSASignature = {
+  compact: Uint8Array
+  recovery?: number
+}
+
+export type JsonWebKey = {
+  crv: string
+  kty: string
+  x?: string
+  y?: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any
 }
 
 export function bytesToBase64url(b: Uint8Array): string {
@@ -31,12 +54,95 @@ export function bytesToBase58(b: Uint8Array): string {
   return u8a.toString(b, 'base58btc')
 }
 
-export function bytesToMultibase(b: Uint8Array, base: keyof typeof bases): string {
-  return bases[base].encode(b)
+// this is from the multicodec table https://github.com/multiformats/multicodec/blob/master/table.csv
+export const supportedCodecs = {
+  'ed25519-pub': 0xed,
+  'x25519-pub': 0xec,
+  'secp256k1-pub': 0xe7,
+  'bls12_381-g1-pub': 0xea,
+  'bls12_381-g2-pub': 0xeb,
+  'p256-pub': 0x1200,
 }
 
-export function hexToBytes(s: string): Uint8Array {
-  const input = s.startsWith('0x') ? s.substring(2) : s
+/**
+ * Encodes the given byte array to a multibase string (defaulting to base58btc).
+ * If a codec is provided, the corresponding multicodec prefix will be added.
+ *
+ * @param b - the Uint8Array to be encoded
+ * @param base - the base to use for encoding (defaults to base58btc)
+ * @param codec - the codec to use for encoding (defaults to no codec)
+ *
+ * @returns the multibase encoded string
+ *
+ * @public
+ */
+export function bytesToMultibase(
+  b: Uint8Array,
+  base: keyof typeof bases = 'base58btc',
+  codec?: keyof typeof supportedCodecs | number
+): string {
+  if (!codec) {
+    return bases[base].encode(b)
+  } else {
+    const codecCode = typeof codec === 'string' ? supportedCodecs[codec] : codec
+    const prefixLength = varint.encodingLength(codecCode)
+    const multicodecEncoding = new Uint8Array(prefixLength + b.length)
+    varint.encodeTo(codecCode, multicodecEncoding) // set prefix
+    multicodecEncoding.set(b, prefixLength) // add the original bytes
+    return bases[base].encode(multicodecEncoding)
+  }
+}
+
+/**
+ * Converts a multibase string to the Uint8Array it represents.
+ * This method will assume the byte array that is multibase encoded is a multicodec and will attempt to decode it.
+ *
+ * @param s - the string to be converted
+ *
+ * @throws if the string is not formatted correctly.
+ *
+ * @public
+ */
+export function multibaseToBytes(s: string): Uint8Array {
+  const { base10, base16, base16upper, base58btc, base64, base64url } = bases
+
+  const baseDecoder = base58btc.decoder
+    .or(base10.decoder)
+    .or(base16.decoder)
+    .or(base16upper.decoder)
+    .or(base64.decoder)
+    .or(base64url.decoder)
+  const bytes = baseDecoder.decode(s)
+
+  // look for known key lengths first
+  // Ed25519/X25519, secp256k1/P256 compressed or not, BLS12-381 G1/G2 compressed
+  if ([32, 33, 48, 64, 65, 96].includes(bytes.length)) {
+    return bytes
+  }
+
+  // then assume multicodec, otherwise return the bytes
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const [codec, length] = varint.decode(bytes)
+    return bytes.slice(length)
+  } catch (e) {
+    // not a multicodec, return the bytes
+    return bytes
+  }
+}
+
+export function hexToBytes(s: string, minLength?: number): Uint8Array {
+  let input = s.startsWith('0x') ? s.substring(2) : s
+
+  if (input.length % 2 !== 0) {
+    input = `0${input}`
+  }
+
+  if (minLength) {
+    const paddedLength = Math.max(input.length, minLength * 2)
+    input = input.padStart(paddedLength, '00')
+  }
+
   return u8a.fromString(input.toLowerCase(), 'base16')
 }
 
@@ -50,6 +156,14 @@ export function decodeBase64url(s: string): string {
 
 export function bytesToHex(b: Uint8Array): string {
   return u8a.toString(b, 'base16')
+}
+
+export function bytesToBigInt(b: Uint8Array): bigint {
+  return BigInt(`0x` + u8a.toString(b, 'base16'))
+}
+
+export function bigintToBytes(n: bigint, minLength?: number): Uint8Array {
+  return hexToBytes(n.toString(16), minLength)
 }
 
 export function stringToBytes(s: string): Uint8Array {
@@ -80,41 +194,85 @@ export function fromJose(signature: string): { r: string; s: string; recoveryPar
   return { r, s, recoveryParam }
 }
 
-export function toSealed(ciphertext: string, tag: string): Uint8Array {
-  return u8a.concat([base64ToBytes(ciphertext), base64ToBytes(tag)])
-}
-
-const hexMatcher = /^(0x)?([a-fA-F0-9]{64}|[a-fA-F0-9]{128})$/
-const base58Matcher = /^([1-9A-HJ-NP-Za-km-z]{44}|[1-9A-HJ-NP-Za-km-z]{88})$/
-const base64Matcher = /^([0-9a-zA-Z=\-_+/]{43}|[0-9a-zA-Z=\-_+/]{86})(={0,2})$/
-
-/**
- * Parses a private key and returns the Uint8Array representation.
- * This method uses an heuristic to determine the key encoding to then be able to parse it into 32 or 64 bytes.
- *
- * @param input a 32 or 64 byte key presented either as a Uint8Array or as a hex, base64, or base58btc encoded string
- *
- * @throws TypeError('Invalid private key format') if the key doesn't match any of the accepted formats or length
- */
-export function parseKey(input: string | Uint8Array): Uint8Array {
-  if (typeof input === 'string') {
-    if (hexMatcher.test(input)) {
-      return hexToBytes(input)
-    } else if (base58Matcher.test(input)) {
-      return base58ToBytes(input)
-    } else if (base64Matcher.test(input)) {
-      return base64ToBytes(input)
-    } else {
-      throw TypeError('bad_key: Invalid private key format')
-    }
-  } else if (input instanceof Uint8Array) {
-    return input
-  } else {
-    throw TypeError('bad_key: Invalid private key format')
-  }
+export function toSealed(ciphertext: string, tag?: string): Uint8Array {
+  return u8a.concat([base64ToBytes(ciphertext), tag ? base64ToBytes(tag) : new Uint8Array(0)])
 }
 
 export function leftpad(data: string, size = 64): string {
   if (data.length === size) return data
   return '0'.repeat(size - data.length) + data
+}
+
+/**
+ * Generate random x25519 key pair.
+ */
+export function generateKeyPair(): { secretKey: Uint8Array; publicKey: Uint8Array } {
+  const secretKey = x25519.utils.randomPrivateKey()
+  const publicKey = x25519.getPublicKey(secretKey)
+  return {
+    secretKey: secretKey,
+    publicKey: publicKey,
+  }
+}
+
+/*
+ * Generatate random secp256r1 key pair.
+*/ 
+// export function generateP256KeyPair()
+export function generateP256KeyPair(): { secretKey: Uint8Array; publicKey: Uint8Array } {
+  const secretKey = p256.utils.randomPrivateKey()
+  const publicKey = p256.getPublicKey(secretKey)
+  return {
+    secretKey: secretKey,
+    publicKey: publicKey,
+  }
+}
+
+/**
+ * Generate private-public x25519 key pair from `seed`.
+ */
+export function generateKeyPairFromSeed(seed: Uint8Array): { secretKey: Uint8Array; publicKey: Uint8Array } {
+  if (seed.length !== 32) {
+    throw new Error(`x25519: seed must be ${32} bytes`)
+  }
+  return {
+    publicKey: x25519.getPublicKey(seed),
+    secretKey: seed,
+  }
+}
+
+/*
+ * Generate random private-public secp256r1 key pair from `seed`.
+*/
+export function generateP256KeyPairFromSeed(seed: Uint8Array): { secretKey: Uint8Array; publicKey: Uint8Array } {
+  if (seed.length !== 32) {
+    throw new Error(`p256: seed must be ${32} bytes`)
+  }
+  return {
+    publicKey: p256.getPublicKey(seed), // I think this might work, but I will have to try it out elsewhere...
+    secretKey: seed,
+  }
+}
+
+/*
+ * Generate key pair object used by createEncrypter.ts for X25519
+ */
+
+export function genX25519EphemeralKeyPair(): EphemeralKeyPair {
+  const epk = generateKeyPair()
+  return {
+    publicKeyJWK: { kty: 'OKP', crv: 'X25519', x: bytesToBase64url(epk.publicKey) },
+    secretKey: epk.secretKey,
+  }
+}
+
+/*
+ * Generate key pair object used by createEncrypter.ts for secp256r1, see RFC7517
+ */
+export function genP256EphemeralKeyPair(): EphemeralKeyPair {
+  const epk = generateP256KeyPair()
+  return {
+    publicKeyJWK: { kty: 'EC', crv: 'P-256', x: bytesToBase64url(epk.publicKey) },
+    secretKey: epk.secretKey,
+  }
 }
